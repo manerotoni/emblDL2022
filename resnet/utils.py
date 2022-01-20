@@ -199,26 +199,30 @@ def validate(model, loader, loss_function,
 
 
 def run_training(model, optimizer,
-                       train_loader, val_loader,
-                       device, name, n_epochs):
+    train_loader, val_loader,
+    device, name, n_epochs, class_weights=None):
     """ Complete training logic
     """
 
+    if class_weights is not None:
+        class_weights = torch.tensor(class_weights).float()
+    
     best_accuracy = 0.
 
-    loss_function = nn.CrossEntropyLoss()
+    loss_function = nn.CrossEntropyLoss(weight=class_weights)
     loss_function.to(device)
 
     scheduler = ReduceLROnPlateau(optimizer,
                                   mode='max',
                                   factor=0.5,
-                                  patience=1)
+                                  patience=50)
 
     checkpoint_path = f'best_checkpoint_{name}.tar'
     log_dir = f'runs/{name}'
     tb_logger = SummaryWriter(log_dir)
 
-    for epoch in trange(n_epochs):
+    t = trange(n_epochs)
+    for epoch in t:
         train(model, train_loader, loss_function, optimizer,
               device, epoch, tb_logger=tb_logger)
         step = (epoch + 1) * len(train_loader)
@@ -234,77 +238,10 @@ def run_training(model, optimizer,
             # if it is, save this check point
             best_accuracy = val_accuracy
             save_checkpoint(model, optimizer, epoch, checkpoint_path)
+            
+        t.set_description(f"Validation acc {val_accuracy}")
 
+    tb_logger.close()
+    
     return checkpoint_path
 
-
-#
-# visualisation functionality
-#
-
-def make_confusion_matrix(labels, predictions, categories, ax):
-    cm = metrics.confusion_matrix(labels, predictions)
-
-    # Normalize the confusion matrix.
-    cm = np.around(cm.astype('float') / cm.sum(axis=1)[:, np.newaxis], decimals=2)
-
-    im = ax.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
-    ax.set_title("Confusion matrix")
-    plt.colorbar(im)
-    tick_marks = np.arange(len(categories))
-    plt.xticks(tick_marks, categories, rotation=45)
-    plt.yticks(tick_marks, categories)
-
-    # Use white text if squares are dark; otherwise black.
-    threshold = cm.max() / 2.
-    for i, j in product(range(cm.shape[0]), range(cm.shape[1])):
-        color = "white" if cm[i, j] > threshold else "black"
-        plt.text(j, i, cm[i, j], horizontalalignment="center", color=color)
-
-    plt.tight_layout()
-    plt.ylabel('True label')
-    plt.xlabel('Predicted label')
-
-
-#
-# models
-#
-
-class SimpleCNN(nn.Module):
-    def __init__(self, n_classes):
-        super().__init__()
-        self.n_classes = n_classes
-
-        # the convolutions
-        self.conv1 = nn.Conv2d(in_channels=3, out_channels=12, kernel_size=5)
-        self.conv2 = nn.Conv2d(in_channels=12, out_channels=24, kernel_size=3)
-        self.pool = nn.MaxPool2d(2, 2)
-
-        # the fully connected part of the network
-        # after applying the convolutions and poolings, the tensor
-        # has the shape 24 x 6 x 6, see below
-        self.fc = nn.Sequential(
-            nn.Linear(24 * 6 * 6, 120),
-            nn.ReLU(),
-            nn.Linear(120, 60),
-            nn.ReLU(),
-            nn.Linear(60, self.n_classes)
-        )
-        self.activation = nn.LogSoftmax(dim=1)
-
-    def apply_convs(self, x):
-        # input image has shape 3 x  32 x 32
-        x = self.pool(F.relu(self.conv1(x)))
-        # shape after conv: 12 x 28 x 28
-        # shape after pooling: 12 x 14 X 14
-        x = self.pool(F.relu(self.conv2(x)))
-        # shape after conv: 24 x 12 x 12
-        # shape after pooling: 24 x 6 x 6
-        return x
-
-    def forward(self, x):
-        x = self.apply_convs(x)
-        x = x.view(-1, 24 * 6 * 6)
-        x = self.fc(x)
-        x = self.activation(x)
-        return x
